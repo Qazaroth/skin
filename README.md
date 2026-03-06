@@ -6,6 +6,8 @@ A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton),
 
 > **AI Disclosure:** This project is built with the assistance of [Claude](https://claude.ai) by Anthropic.
 
+---
+
 ## Setup
 
 ### Option 1 — Download the executable (recommended)
@@ -37,54 +39,59 @@ pip install -r requirements.txt
 python main.py
 ```
 
+---
+
 ## Features
 
-- **Login / Register** — full auth flow with token storage & auto-refresh
+- **Auto login** — session is saved on exit and restored on next launch; only `/logout` clears it
+- **Login / Register** — full auth flow with access token storage and silent auto-refresh
+- **Real-time messaging** — WebSocket gateway connection with automatic reconnect and exponential backoff
+- **Direct Messages** — open, list, and chat in DM channels; incoming messages appear instantly without pressing Enter
+- **Unread indicators** — green dot on DM channels with unread messages when you are in a different conversation
 - **Profile viewer** — `/me` shows your account details in a table
-- **Profile editor** — `/edit <field> <value>` patches your profile via `PATCH /users/@me`
-- **Message shell** — type freely; messages render in a scrollable history pane
-- **Sidebar** — shows your username, status, and placeholders for servers/DMs
+- **Profile editor** — `/edit <field> <value>` updates your profile (`username`, `displayName`, `avatar_url`)
+- **Sidebar** — shows your username, gateway connection status, and DM channel list with display names and usernames
+- **Server switcher** — `/config` lets you point the client at a different backend URL at runtime
+
+---
 
 ## Commands
 
 | Command | Description |
 |---|---|
 | `/help` | Show all commands |
-| `/me` | Fetch & display your profile |
-| `/edit <field> <val>` | Update a profile field |
-| `/logout` | Log out and return to welcome screen |
-| `/quit` | Exit the client |
+| `/me` | Fetch and display your profile |
+| `/edit <field> <val>` | Update a profile field (`username`, `displayName`, `avatar_url`) |
+| `/dms` | List all your DM conversations |
+| `/dm <username>` | Open a DM with a user and load message history |
+| `/config` | Show or change the backend server URL |
+| `/logout` | Log out, clear session, and return to the welcome screen |
+| `/quit` | Exit the client (session is preserved for next launch) |
 
-## Extending (when backend grows)
-
-### Adding WebSocket support
-1. `pip install websocket-client`
-2. In `app.py`, create a `WSClient` thread after login that listens for events
-3. In `ChatShell`, replace `_fake_send()` with a real WS send call
-4. Push incoming messages into `self.messages` and call `_full_render()`
-
-### Adding channels/servers
-1. Add `GET /channels`, `GET /servers` calls to `api_client.py`
-2. Populate the sidebar in `screens.py → ChatShell._render_sidebar_and_input()`
-3. Add `/join <channel>` command to `ChatShell.run()`
-
-### Adding Direct Messages
-1. Add `GET /dm/:userId`, `POST /dm/:userId` to `api_client.py`
-2. Add `/dm <username>` command that switches `self.current_ch` and loads history
+---
 
 ## Project Structure
 
 ```
 skin/
 ├── src/
-│   ├── app.py           # App controller / screen orchestration
-│   ├── api_client.py    # REST API wrapper (auth, users, future endpoints)
-│   ├── config.py        # Config loader / saver
+│   ├── app.py           # App controller and screen orchestration
+│   ├── api_client.py    # REST API wrapper (auth, users, channels, messages)
+│   ├── gateway.py       # WebSocket gateway client (IDENTIFY, READY, MESSAGE_CREATE)
+│   ├── config.py        # Config loader / saver (base_url, session cookies)
 │   └── screens.py       # All Rich TUI screens and the ChatShell
 ├── scripts/
-│   ├── run.bat          # Windows launcher
-│   └── run.sh           # Linux / Mac launcher
+│   ├── run.bat          # Windows launcher (auto-installs dependencies)
+│   └── run.sh           # Linux / Mac launcher (auto-installs dependencies)
 ├── main.py              # Entry point
 ├── requirements.txt
 └── README.md
 ```
+
+---
+
+## Notes
+
+- `session.json` is created next to `main.py` after first login and used for auto-login on subsequent launches. It stores only the refresh token cookie — never the access token.
+- The WebSocket gateway currently supports `IDENTIFY`, `READY`, and `MESSAGE_CREATE`. Further events (`MESSAGE_UPDATE`, `MESSAGE_DELETE`, `PRESENCE_UPDATE` etc.) will be added as the backend implements them.
+- Real-time message display on Windows requires no extra setup — the client uses a background thread for input so the screen can update without waiting for Enter.
