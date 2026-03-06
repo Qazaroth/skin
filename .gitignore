@@ -5,4 +5,4 @@ dist/
 config.json
 .deps_installed
 
-.spec
+*.spec
