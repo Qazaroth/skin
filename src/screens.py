@@ -144,31 +144,51 @@ class ChatShell:
     HELP_TEXT = f"""
 [bold {BLURPLE}]Available commands[/]
 
-  [bold]/help[/]               Show this message
-  [bold]/me[/]                 Show your profile
-  [bold]/edit <field> <val>[/] Update your profile  (e.g. /edit username Joe)
-  [bold]/config[/]             Show or change the server URL
-  [bold]/logout[/]             Log out
-  [bold]/quit[/]               Exit the client
+  [bold]/help[/]                    Show this message
+  [bold]/me[/]                      Show your profile
+  [bold]/edit <field> <val>[/]      Update profile  (fields: username, displayName, avatar_url)
+  [bold]/dms[/]                     List your DM conversations
+  [bold]/dm <username_or_id>[/]     Open a DM with a user by their ID
+  [bold]/config[/]                  Show or change the server URL
+  [bold]/logout[/]                  Log out
+  [bold]/quit[/]                    Exit the client
 
 [dim]── Coming soon ──────────────────────────────────────────[/dim]
-  /join  /leave  /dm  /servers  (requires backend channels/WS)
+  /join  /leave  /servers  (requires backend guild channels/WS)
 """
 
+    EDITABLE_FIELDS = ("username", "displayName", "avatar_url")
+
     def __init__(self, console: Console, api_client, user: dict, version: str = "0.1"):
-        self.console    = console
-        self.api        = api_client
-        self.user       = user
-        self.version    = version
-        self.messages   = []
-        self.current_ch = "#general"
+        self.console         = console
+        self.api             = api_client
+        self.user            = user
+        self.version         = version
+        self.messages        = []
+        self.current_ch      = None
+        self.current_ch_name = "home"
+        self.dm_channels     = []
+        self.gw_status       = "connecting…"   # shown in sidebar
+        self.gw_ready        = False
+
+    # ── Gateway callbacks (called from background thread) ─────────────────────
+
+    def on_gateway_status(self, state: str, msg: str):
+        self.gw_status = msg
+        self.gw_ready  = (state == "ready")
+
+    def on_gateway_event(self, op: str, data: dict):
+        """Handle incoming gateway ops. Extend here as Phase 2 ops arrive."""
+        if op == "READY":
+            pass  # status already updated in on_gateway_status
+        # Future: MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE, PRESENCE_UPDATE…
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _render_header(self):
         uname = self.user.get("username", "unknown")
         left  = Text(f" ◈  Skin v{self.version}", style=f"bold {BLURPLE}")
-        right = Text(f"@{uname} ● {self.current_ch} ", style=f"{MUTED}")
+        right = Text(f"@{uname} ● {self.current_ch_name} ", style=f"{MUTED}")
         rule  = Table.grid(expand=True)
         rule.add_column()
         rule.add_column(justify="right")
@@ -178,30 +198,39 @@ class ChatShell:
 
     def _render_messages(self):
         if not self.messages:
-            self.console.print(
-                Align.center(
-                    f"\n[dim {MUTED}]No messages yet. Say something![/]\n"
-                )
-            )
+            hint = "Select a DM with /dms or /dm <id>" if not self.current_ch else "No messages yet. Say something!"
+            self.console.print(Align.center(f"\n[dim {MUTED}]{hint}[/]\n"))
             return
-        for author, content, ts in self.messages[-20:]:
+        for author, content, ts, edited in self.messages[-20:]:
+            edited_tag = f" [dim {MUTED}](edited)[/]" if edited else ""
             self.console.print(
-                f"[bold {BLURPLE}]{author}[/] [dim {MUTED}]{ts}[/]\n  {content}\n"
+                f"[bold {BLURPLE}]{author}[/] [dim {MUTED}]{ts}[/]{edited_tag}\n  {content}\n"
             )
 
     def _render_sidebar_and_input(self):
         uname  = self.user.get("username", "?")
         email  = self.user.get("email", "")
-        status = f"[bold {GREEN}]● online[/]"
+        if self.gw_ready:
+            status = f"[bold {GREEN}]● online[/]"
+        else:
+            status = f"[bold {YELLOW}]◌ {self.gw_status}[/]"
+
+        dm_lines = ""
+        if self.dm_channels:
+            for ch in self.dm_channels[:8]:
+                name    = ch.get("participant_display_name") or ch.get("participant_username", "?")
+                ch_id   = ch.get("id", "")
+                active  = "▶ " if ch_id == self.current_ch else "  "
+                dm_lines += f"[dim]{active}{name}[/]\n"
+        else:
+            dm_lines = "[dim]  /dms to load[/]\n"
 
         sidebar = Panel(
             f"[bold {LIGHT_TEXT}]@{uname}[/]\n"
             f"[dim]{email}[/]\n\n"
             f"{status}\n\n"
-            f"[dim {MUTED}]── Servers ──[/]\n"
-            f"[dim]  (none yet)[/]\n\n"
             f"[dim {MUTED}]── DMs ──────[/]\n"
-            f"[dim]  (none yet)[/]",
+            f"{dm_lines}",
             title=f"[bold {BLURPLE}]You[/]",
             border_style=BLURPLE,
             width=28,
@@ -252,10 +281,14 @@ class ChatShell:
 
     def _cmd_edit(self, parts: list[str]):
         if len(parts) < 3:
-            _error(self.console, "Usage: /edit <field> <value>")
+            _error(self.console, f"Usage: /edit <field> <value>  (fields: {', '.join(self.EDITABLE_FIELDS)})")
             self.console.input("  Press Enter…")
             return
         field, value = parts[1], " ".join(parts[2:])
+        if field not in self.EDITABLE_FIELDS:
+            _error(self.console, f"Unknown field '{field}'. Editable fields: {', '.join(self.EDITABLE_FIELDS)}")
+            self.console.input("  Press Enter…")
+            return
         try:
             self.user = self.api.update_me(**{field: value})
             _success(self.console, f"Updated {field}!")
@@ -263,12 +296,149 @@ class ChatShell:
             _error(self.console, str(e))
         self.console.input("  Press Enter…")
 
-    def _fake_send(self, text: str):
-        """Placeholder until WebSocket messages are wired up."""
+    def _cmd_dms(self):
+        try:
+            self.dm_channels = self.api.get_dm_channels()
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+            return
+
+        if not self.dm_channels:
+            self.console.print(f"  [dim {MUTED}]No DM conversations yet.[/]")
+            self.console.input("  Press Enter…")
+            return
+
+        t = Table(title="DM Channels", box=box.ROUNDED, border_style=BLURPLE)
+        t.add_column("#",          style=f"dim {MUTED}",    width=4)
+        t.add_column("User",       style=f"bold {LIGHT_TEXT}")
+        t.add_column("Channel ID", style=f"dim {MUTED}")
+
+        for i, ch in enumerate(self.dm_channels, 1):
+            name = ch.get("participant_display_name") or ch.get("participant_username", "?")
+            t.add_row(str(i), name, ch.get("id", ""))
+
+        self.console.print(t)
+        self.console.print(f"  [dim {MUTED}]Use /dm <channel_id> to open a conversation.[/]")
+        self.console.input("  Press Enter…")
+
+    def _cmd_dm(self, parts: list[str]):
+        if len(parts) < 2:
+            _error(self.console, "Usage: /dm <recipient_id>")
+            self.console.input("  Press Enter…")
+            return
+
+        recipient_id = parts[1]
+        try:
+            channel = self.api.open_dm(recipient_id)
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+            return
+
+        ch_id   = channel.get("id")
+        recip   = channel.get("recipient", {})
+        name    = recip.get("displayName") or recip.get("username", recipient_id)
+
+        self.current_ch      = ch_id
+        self.current_ch_name = f"DM:{name}"
+        self.messages        = []
+
+        # Load message history
+        try:
+            history = self.api.get_messages(ch_id, limit=50)
+            for msg in reversed(history):
+                author  = msg.get("author_display_name") or msg.get("author_username", "?")
+                content = msg.get("content", "")
+                ts      = self._fmt_ts(msg.get("created_at"))
+                edited  = bool(msg.get("edited_at"))
+                self.messages.append((author, content, ts, edited))
+        except Exception:
+            pass
+
+    def _fmt_ts(self, ts_raw) -> str:
         import datetime
-        ts = datetime.datetime.now().strftime("%H:%M")
-        uname = self.user.get("username", "me")
-        self.messages.append((uname, text, ts))
+        try:
+            ts = int(ts_raw)
+            if ts <= 0:
+                raise ValueError
+            ts = ts / 1000 if ts > 1e10 else ts
+            return datetime.datetime.fromtimestamp(ts).astimezone().strftime("%H:%M")
+        except (ValueError, TypeError, OSError):
+            return datetime.datetime.now().strftime("%H:%M")
+
+    def _cmd_send(self, text: str):
+        """Send a message to the current channel via REST."""
+        if not self.current_ch:
+            _error(self.console, "No channel selected. Use /dms or /dm <username> first.")
+            self.console.input("  Press Enter…")
+            return
+        try:
+            msg     = self.api.send_message(self.current_ch, text)
+            author  = msg.get("author_display_name") or msg.get("author_username", "?")
+            content = msg.get("content", text)
+            ts      = self._fmt_ts(msg.get("created_at"))
+            self.messages.append((author, content, ts, False))
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+
+    def _read_input(self) -> str | None:
+        """
+        Read a line of input, but wake up every second to check for
+        gateway status changes and re-render if needed.
+        Returns the input string, or None on KeyboardInterrupt.
+        """
+        import sys
+        import select
+
+        prompt = f"  \x1b[1;34m{self.current_ch_name} >\x1b[0m "
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+
+        buf = ""
+        last_status = self.gw_status
+
+        while True:
+            # Check if stdin has data, with a 1-second timeout
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 1.0)
+            except (ValueError, OSError):
+                # stdin closed or unavailable (e.g. Windows — fall back)
+                try:
+                    return input()
+                except KeyboardInterrupt:
+                    return None
+
+            if ready:
+                try:
+                    char = sys.stdin.read(1)
+                except KeyboardInterrupt:
+                    return None
+                if char in ("\n", "\r"):
+                    sys.stdout.write("\n")
+                    return buf.strip()
+                elif char in ("\x7f", "\x08"):  # backspace
+                    if buf:
+                        buf = buf[:-1]
+                        sys.stdout.write("\b \b")
+                        sys.stdout.flush()
+                elif char == "\x03":  # Ctrl+C
+                    return None
+                else:
+                    buf += char
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+            else:
+                # Timeout — check if gateway status changed
+                if self.gw_status != last_status:
+                    last_status = self.gw_status
+                    # Re-render: clear line, redraw screen, reprint prompt + buffer
+                    sys.stdout.write("\r\x1b[2K")
+                    sys.stdout.flush()
+                    self._full_render()
+                    sys.stdout.write(prompt + buf)
+                    sys.stdout.flush()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -277,10 +447,11 @@ class ChatShell:
         self._full_render()
         while True:
             try:
-                raw = self.console.input(
-                    f"  [bold {BLURPLE}]{self.current_ch} >[/] "
-                ).strip()
+                raw = self._read_input()
             except KeyboardInterrupt:
+                raw = None
+
+            if raw is None:
                 raw = "/logout"
 
             if not raw:
@@ -299,6 +470,12 @@ class ChatShell:
 
                 elif cmd == "/edit":
                     self._cmd_edit(parts)
+
+                elif cmd == "/dms":
+                    self._cmd_dms()
+
+                elif cmd == "/dm":
+                    self._cmd_dm(parts)
 
                 elif cmd == "/config":
                     self.console.print(f"\n  Current server: [bold]{self.api.base_url}[/]")
@@ -331,6 +508,6 @@ class ChatShell:
                     _error(self.console, f"Unknown command: {cmd}. Try /help")
                     self.console.input("  Press Enter…")
             else:
-                self._fake_send(raw)
+                self._cmd_send(raw)
 
             self._full_render()

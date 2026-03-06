@@ -3,7 +3,8 @@
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from api_client import APIClient, APIError
-from src.screens import (
+from gateway import Gateway
+from screens import (
     show_welcome, show_login, show_register,
     ChatShell, _error, _success, _status,
     GREEN, RED, YELLOW, BLURPLE, MUTED, LIGHT_TEXT
@@ -116,6 +117,8 @@ class SkinApp:
             self.console.print(f"\n  [dim]Creating account…[/]")
             try:
                 self.api.register(username, email, password)
+                # Register returns no token — login immediately after
+                self.api.login(email, password)
                 _success(self.console, f"Account created! Welcome, {username}!")
                 self.console.input("  Press Enter to continue…")
                 return "ok"
@@ -136,8 +139,35 @@ class SkinApp:
             self.console.input("  Press Enter…")
             return "logout"
 
-        shell  = ChatShell(self.console, self.api, user, self.version)
+        # Derive WebSocket URL from the REST base URL
+        ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = ws_url.rsplit("/api", 1)[0]  # strip /api suffix → ws://localhost:3000
+
+        shell = ChatShell(self.console, self.api, user, self.version)
+
+        # Pre-load DM channels so the sidebar is populated immediately
+        try:
+            shell.dm_channels = self.api.get_dm_channels()
+        except Exception:
+            pass
+
+        # Pre-load DM channels so the sidebar is populated immediately
+        try:
+            shell.dm_channels = self.api.get_dm_channels()
+        except Exception:
+            pass
+
+        gateway = Gateway(
+            ws_url    = ws_url,
+            get_token = lambda: self.api.access_token or "",
+            on_event  = shell.on_gateway_event,
+            on_status = shell.on_gateway_status,
+        )
+        gateway.start()
+
         result = shell.run()
+
+        gateway.stop()
 
         if result in ("logout", "quit"):
             try:

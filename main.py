@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Skin Terminal Client - Main Entry Point"""
 
-VERSION = "1.1.0"  # <-- Change this to update the version across the app
+VERSION = "1.2.0"  # <-- Change this to update the version across the app
 
 import sys
 import os
