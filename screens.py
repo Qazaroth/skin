@@ -55,7 +55,7 @@ def _success(console: Console, msg: str):
 # ── Welcome screen ────────────────────────────────────────────────────────────
 
 def show_welcome(console: Console, version: str = "0.1") -> str:
-    """Returns 'login', 'register', or 'quit'"""
+    """Returns 'login', 'register', 'config', or 'quit'"""
     console.clear()
     console.print(_logo(version))
     console.print()
@@ -64,6 +64,7 @@ def show_welcome(console: Console, version: str = "0.1") -> str:
     table.add_column(justify="center")
     table.add_row(f"[bold {BLURPLE}][1][/]  Login")
     table.add_row(f"[bold {BLURPLE}][2][/]  Register")
+    table.add_row(f"[bold {BLURPLE}][3][/]  Change Server")
     table.add_row(f"[bold {MUTED}][q][/]  Quit")
 
     console.print(Align.center(table))
@@ -80,9 +81,11 @@ def show_welcome(console: Console, version: str = "0.1") -> str:
             return "login"
         if choice in ("2", "register"):
             return "register"
+        if choice in ("3", "server", "config"):
+            return "config"
         if choice in ("q", "quit"):
             return "quit"
-        _error(console, "Enter 1, 2, or q")
+        _error(console, "Enter 1, 2, 3, or q")
 
 
 # ── Login screen ──────────────────────────────────────────────────────────────
@@ -144,6 +147,7 @@ class ChatShell:
   [bold]/help[/]               Show this message
   [bold]/me[/]                 Show your profile
   [bold]/edit <field> <val>[/] Update your profile  (e.g. /edit username Joe)
+  [bold]/config[/]             Show or change the server URL
   [bold]/logout[/]             Log out
   [bold]/quit[/]               Exit the client
 
@@ -295,6 +299,25 @@ class ChatShell:
 
                 elif cmd == "/edit":
                     self._cmd_edit(parts)
+
+                elif cmd == "/config":
+                    self.console.print(f"\n  Current server: [bold]{self.api.base_url}[/]")
+                    new_url = Prompt.ask(
+                        f"  [bold {BLURPLE}]New server URL[/] (leave blank to cancel)",
+                        console=self.console,
+                        default=""
+                    ).strip()
+                    if new_url:
+                        if not new_url.startswith("http"):
+                            _error(self.console, "URL must start with http:// or https://")
+                        else:
+                            self.api.base_url = new_url
+                            import config as _config
+                            cfg = _config.load()
+                            cfg["base_url"] = new_url
+                            _config.save(cfg)
+                            _success(self.console, f"Server updated to: {new_url}")
+                    self.console.input("  Press Enter…")
 
                 elif cmd == "/logout":
                     if Confirm.ask(f"  [bold {YELLOW}]Log out?[/]", console=self.console):
