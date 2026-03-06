@@ -144,14 +144,18 @@ class ChatShell:
     HELP_TEXT = f"""
 [bold {BLURPLE}]Available commands[/]
 
-  [bold]/help[/]                    Show this message
-  [bold]/me[/]                      Show your profile
-  [bold]/edit <field> <val>[/]      Update profile  (fields: username, displayName, avatar_url)
-  [bold]/dms[/]                     List your DM conversations
-  [bold]/dm <username_or_id>[/]     Open a DM with a user by their ID
-  [bold]/config[/]                  Show or change the server URL
-  [bold]/logout[/]                  Log out
-  [bold]/quit[/]                    Exit the client
+  [bold]/help[/]                         Show this message
+  [bold]/me[/]                           Show your profile
+  [bold]/edit <field> <val>[/]           Update profile  (fields: username, displayName, avatar_url)
+  [bold]/dms[/]                          List your DM conversations
+  [bold]/dm <username>[/]                Open a DM with a user
+  [bold]/mute [username][/]              Toggle mute on current or named channel
+  [bold]/msgs[/]                         Show messages with index numbers
+  [bold]/editmsg <#> <new content>[/]    Edit one of your messages by index
+  [bold]/delmsg <#>[/]                   Delete one of your messages by index
+  [bold]/config[/]                       Show or change the server URL
+  [bold]/logout[/]                       Log out
+  [bold]/quit[/]                         Exit the client
 
 [dim]── Coming soon ──────────────────────────────────────────[/dim]
   /join  /leave  /servers  (requires backend guild channels/WS)
@@ -165,6 +169,7 @@ class ChatShell:
         self.user            = user
         self.version         = version
         self.messages        = []
+        self.message_ids     = []          # parallel list tracking message IDs for UPDATE/DELETE
         self.current_ch      = None
         self.current_ch_name = "home"
         self.dm_channels     = []
@@ -172,6 +177,8 @@ class ChatShell:
         self.gw_ready        = False
         self._pending_render = False            # set by background thread to trigger re-render
         self.unread          = set()            # channel ids with unread messages
+        self.muted           = set()            # channel ids with toasts suppressed
+        self.notifications   = []              # list of (text, expires_at) toast messages
 
     # ── Gateway callbacks (called from background thread) ─────────────────────
 
@@ -195,26 +202,51 @@ class ChatShell:
             if ch_id == self.current_ch:
                 # Message is for the open channel — append directly
                 self.messages.append((author, content, ts, edited))
-                self._pending_render = True
-
-            elif self.current_ch is None:
-                # No channel open — auto-switch to this one and load it
-                self.current_ch      = ch_id
-                self.current_ch_name = f"DM:{author}"
-                self.messages        = [(author, content, ts, edited)]
-                # Refresh DM list so the sidebar shows the new channel
-                try:
-                    self.dm_channels = self.api.get_dm_channels()
-                except Exception:
-                    pass
+                self.message_ids.append(data.get("id"))
                 self._pending_render = True
 
             else:
-                # Message is for a different channel — mark it as unread in sidebar
+                # Message is for a different (or unopened) channel
+                # Refresh DM list if this channel isn't known yet
+                if not any(ch.get("id") == ch_id for ch in self.dm_channels):
+                    try:
+                        self.dm_channels = self.api.get_dm_channels()
+                    except Exception:
+                        pass
+                # Find the channel name for the notification
+                ch_info   = next((c for c in self.dm_channels if c.get("id") == ch_id), {})
+                ch_name   = self._fmt_participant(
+                    ch_info.get("participant_display_name"),
+                    ch_info.get("participant_username") or author
+                )
+                if ch_id not in self.muted:
+                    preview = content if len(content) <= 40 else content[:37] + "…"
+                    self._push_notification(f"DM from {ch_name}: {preview}  [dim](use /dm {ch_info.get('participant_username', ch_id)})[/]")
                 self.unread.add(ch_id)
                 self._pending_render = True
 
-        # Future: MESSAGE_UPDATE, MESSAGE_DELETE, PRESENCE_UPDATE…
+        elif op == "MESSAGE_UPDATE":
+            ch_id = data.get("channel_id")
+            if ch_id == self.current_ch:
+                msg_id  = data.get("id")
+                content = data.get("content", "")
+                ts      = self._fmt_ts(data.get("created_at"))
+                edited  = bool(data.get("edited_at"))
+                author  = data.get("author_display_name") or data.get("author_username", "?")
+                for i, (a, c, t, e) in enumerate(self.messages):
+                    if self.message_ids[i] == msg_id:
+                        self.messages[i] = (author, content, ts, True)
+                        break
+                self._pending_render = True
+
+        elif op == "MESSAGE_DELETE":
+            ch_id  = data.get("channel_id")
+            msg_id = data.get("id")
+            if ch_id == self.current_ch and msg_id in self.message_ids:
+                idx = self.message_ids.index(msg_id)
+                self.messages.pop(idx)
+                self.message_ids.pop(idx)
+                self._pending_render = True
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -229,15 +261,127 @@ class ChatShell:
         self.console.print(rule, style=f"on {DARK_BG}")
         self.console.print(Rule(style=BLURPLE))
 
+    def _resolve_msg_index(self, raw: str):
+        """
+        Parse a 1-based message index from the user and return (list_index, message_id).
+        Returns (None, None) and prints an error if invalid.
+        """
+        try:
+            n = int(raw.lstrip("#"))
+        except ValueError:
+            _error(self.console, f"'{raw}' is not a valid message number.")
+            return None, None
+        if n < 1 or n > len(self.messages):
+            _error(self.console, f"No message #{n}. You have {len(self.messages)} messages loaded.")
+            return None, None
+        idx    = n - 1
+        msg_id = self.message_ids[idx] if idx < len(self.message_ids) else None
+        if not msg_id:
+            _error(self.console, f"Message #{n} has no ID — it may have been loaded before tracking began. Use /dm to reload.")
+            return None, None
+        return idx, msg_id
+
+    def _cmd_editmsg(self, parts: list[str]):
+        if len(parts) < 3:
+            _error(self.console, "Usage: /editmsg <#> <new content>")
+            self.console.input("  Press Enter…")
+            return
+        if not self.current_ch:
+            _error(self.console, "No channel open.")
+            self.console.input("  Press Enter…")
+            return
+        idx, msg_id = self._resolve_msg_index(parts[1])
+        if msg_id is None:
+            self.console.input("  Press Enter…")
+            return
+        new_content = " ".join(parts[2:])
+        try:
+            self.api.edit_message(self.current_ch, msg_id, new_content)
+            # Gateway MESSAGE_UPDATE will update the display automatically
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+
+    def _cmd_delmsg(self, parts: list[str]):
+        if len(parts) < 2:
+            _error(self.console, "Usage: /delmsg <#>")
+            self.console.input("  Press Enter…")
+            return
+        if not self.current_ch:
+            _error(self.console, "No channel open.")
+            self.console.input("  Press Enter…")
+            return
+        idx, msg_id = self._resolve_msg_index(parts[1])
+        if msg_id is None:
+            self.console.input("  Press Enter…")
+            return
+        try:
+            self.api.delete_message(self.current_ch, msg_id)
+            # Gateway MESSAGE_DELETE will remove it from display automatically
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+
+    def _cmd_mute(self, parts: list[str]):
+        """Toggle mute for the current channel or a named one."""
+        # If a username arg is given, find that channel; otherwise use current
+        if len(parts) >= 2:
+            target_username = parts[1]
+            ch = next((
+                c for c in self.dm_channels
+                if c.get("participant_username", "").lower() == target_username.lower()
+            ), None)
+            if not ch:
+                _error(self.console, f"No DM channel found for '{target_username}'. Use /dms to list channels.")
+                self.console.input("  Press Enter…")
+                return
+            ch_id   = ch.get("id")
+            ch_name = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
+        elif self.current_ch:
+            ch_id   = self.current_ch
+            ch_name = self.current_ch_name
+        else:
+            _error(self.console, "No channel open. Use /mute <username> or open a DM first.")
+            self.console.input("  Press Enter…")
+            return
+
+        if ch_id in self.muted:
+            self.muted.discard(ch_id)
+            _success(self.console, f"Unmuted {ch_name}.")
+        else:
+            self.muted.add(ch_id)
+            _success(self.console, f"Muted {ch_name}. You'll still see unread dots but no toasts.")
+        self.console.input("  Press Enter…")
+
+    def _push_notification(self, text: str, duration: float = 8.0):
+        """Add a toast notification that expires after `duration` seconds."""
+        import time
+        self.notifications.append((text, time.monotonic() + duration))
+
     def _render_messages(self):
+        import time
+        # Expire old notifications
+        now = time.monotonic()
+        self.notifications = [(t, exp) for t, exp in self.notifications if exp > now]
+        # Show active notifications as a toast bar
+        for text, _ in self.notifications:
+            self.console.print(Panel(
+                f"[bold {YELLOW}]🔔 {text}[/]",
+                border_style=YELLOW,
+                padding=(0, 1),
+            ))
+
         if not self.messages:
-            hint = "Select a DM with /dms or /dm <id>" if not self.current_ch else "No messages yet. Say something!"
+            hint = "Select a DM with /dms or /dm <username>" if not self.current_ch else "No messages yet. Say something!"
             self.console.print(Align.center(f"\n[dim {MUTED}]{hint}[/]\n"))
             return
-        for author, content, ts, edited in self.messages[-20:]:
+        visible = self.messages[-20:]
+        offset  = len(self.messages) - len(visible)  # so #1 is always the oldest shown
+        for i, (author, content, ts, edited) in enumerate(visible, start=offset + 1):
             edited_tag = f" [dim {MUTED}](edited)[/]" if edited else ""
+            idx_tag    = f"[dim {MUTED}]#{i}[/] "
             self.console.print(
-                f"[bold {BLURPLE}]{author}[/] [dim {MUTED}]{ts}[/]{edited_tag}\n  {content}\n"
+                f"{idx_tag}[bold {BLURPLE}]{author}[/] [dim {MUTED}]{ts}[/]{edited_tag}\n  {content}\n"
             )
 
     def _render_sidebar_and_input(self):
@@ -255,7 +399,8 @@ class ChatShell:
                 ch_id   = ch.get("id", "")
                 active  = "▶ " if ch_id == self.current_ch else "  "
                 unread  = f"[bold {GREEN}] ●[/]" if ch_id in self.unread else ""
-                dm_lines += f"[dim]{active}{name}[/]{unread}\n"
+                muted   = f" [dim {MUTED}]🔇[/]" if ch_id in self.muted else ""
+                dm_lines += f"[dim]{active}{name}[/]{unread}{muted}\n"
         else:
             dm_lines = "[dim]  (none yet)[/]\n"
 
@@ -377,6 +522,7 @@ class ChatShell:
         self.current_ch      = ch_id
         self.current_ch_name = f"DM:{name}"
         self.messages        = []
+        self.message_ids     = []
         self.unread.discard(ch_id)
 
         # Load message history
@@ -388,6 +534,7 @@ class ChatShell:
                 ts      = self._fmt_ts(msg.get("created_at"))
                 edited  = bool(msg.get("edited_at"))
                 self.messages.append((author, content, ts, edited))
+                self.message_ids.append(msg.get("id"))
         except Exception:
             pass
 
@@ -449,7 +596,10 @@ class ChatShell:
         t.start()
 
         while not done.wait(timeout=0.1):
-            if self._pending_render:
+            import time
+            now = time.monotonic()
+            has_expiring = any(exp <= now for _, exp in self.notifications)
+            if self._pending_render or has_expiring:
                 self._pending_render = False
                 # Clear current line, re-render, reprint prompt
                 # We can't show the typed buffer since input() owns stdin,
@@ -498,6 +648,18 @@ class ChatShell:
 
                 elif cmd == "/dm":
                     self._cmd_dm(parts)
+
+                elif cmd == "/mute":
+                    self._cmd_mute(parts)
+
+                elif cmd == "/msgs":
+                    self._full_render()
+
+                elif cmd == "/editmsg":
+                    self._cmd_editmsg(parts)
+
+                elif cmd == "/delmsg":
+                    self._cmd_delmsg(parts)
 
                 elif cmd == "/config":
                     self.console.print(f"\n  Current server: [bold]{self.api.base_url}[/]")
