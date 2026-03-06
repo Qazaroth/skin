@@ -8,8 +8,19 @@ A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton),
 
 ## Setup
 
+Make sure [Python 3.10+](https://www.python.org/downloads/) is installed, then just run the appropriate script for your platform — it will handle installing dependencies automatically on first launch.
+
+**Windows** — double-click `run.bat`
+
+**Linux / Mac** — open a terminal in the project folder and run:
 ```bash
-cd skin
+chmod +x run.sh
+./run.sh
+```
+
+### Manual setup
+If you'd prefer to run it yourself:
+```bash
 pip install -r requirements.txt
 python main.py
 ```
