@@ -1,0 +1,79 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --onefile --name skin main.py
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: skin-windows
+          path: dist/skin.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --onefile --name skin main.py
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: skin-linux
+          path: dist/skin
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: skin-windows
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: skin-linux
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            skin.exe
+            skin
+          generate_release_notes: true

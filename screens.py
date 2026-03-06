@@ -27,7 +27,7 @@ MUTED     = "#949BA4"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _logo() -> Panel:
+def _logo(version: str = "0.1") -> Panel:
     logo = Text(justify="center")
     logo.append("\n")
     logo.append("  ███████╗██╗  ██╗██╗███╗   ██╗\n", style=f"bold {BLURPLE}")
@@ -36,7 +36,7 @@ def _logo() -> Panel:
     logo.append("  ╚════██║██╔═██╗ ██║██║╚██╗██║\n", style=f"bold {BLURPLE}")
     logo.append("  ███████║██║  ██╗██║██║ ╚████║\n", style=f"bold {BLURPLE}")
     logo.append("  ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝\n", style=f"bold {BLURPLE}")
-    logo.append("              Terminal Client  v0.1\n", style=f"dim {BLURPLE}")
+    logo.append(f"              Terminal Client  v{version}\n", style=f"dim {BLURPLE}")
     return Panel(logo, border_style=BLURPLE, box=box.DOUBLE_EDGE)
 
 
@@ -54,10 +54,10 @@ def _success(console: Console, msg: str):
 
 # ── Welcome screen ────────────────────────────────────────────────────────────
 
-def show_welcome(console: Console) -> str:
+def show_welcome(console: Console, version: str = "0.1") -> str:
     """Returns 'login', 'register', or 'quit'"""
     console.clear()
-    console.print(_logo())
+    console.print(_logo(version))
     console.print()
 
     table = Table(show_header=False, box=box.SIMPLE, padding=(0, 3))
@@ -87,10 +87,10 @@ def show_welcome(console: Console) -> str:
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 
-def show_login(console: Console) -> tuple[str, str] | None:
+def show_login(console: Console, version: str = "0.1") -> tuple[str, str] | None:
     """Returns (login, password) or None if user cancels."""
     console.clear()
-    console.print(_logo())
+    console.print(_logo(version))
     console.print(
         Panel(f"[bold {BLURPLE}]Login[/]  — press Ctrl+C to go back",
               border_style=BLURPLE, padding=(0, 1))
@@ -106,10 +106,10 @@ def show_login(console: Console) -> tuple[str, str] | None:
 
 # ── Register screen ───────────────────────────────────────────────────────────
 
-def show_register(console: Console) -> tuple[str, str, str] | None:
+def show_register(console: Console, version: str = "0.1") -> tuple[str, str, str] | None:
     """Returns (username, email, password) or None if user cancels."""
     console.clear()
-    console.print(_logo())
+    console.print(_logo(version))
     console.print(
         Panel(f"[bold {BLURPLE}]Create Account[/]  — press Ctrl+C to go back",
               border_style=BLURPLE, padding=(0, 1))
@@ -151,18 +151,19 @@ class ChatShell:
   /join  /leave  /dm  /servers  (requires backend channels/WS)
 """
 
-    def __init__(self, console: Console, api_client, user: dict):
+    def __init__(self, console: Console, api_client, user: dict, version: str = "0.1"):
         self.console    = console
         self.api        = api_client
         self.user       = user
-        self.messages   = []          # list of (author, content) tuples
-        self.current_ch = "#general"  # placeholder
+        self.version    = version
+        self.messages   = []
+        self.current_ch = "#general"
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _render_header(self):
         uname = self.user.get("username", "unknown")
-        left  = Text(f" ◈  Skin", style=f"bold {BLURPLE}")
+        left  = Text(f" ◈  Skin v{self.version}", style=f"bold {BLURPLE}")
         right = Text(f"@{uname} ● {self.current_ch} ", style=f"{MUTED}")
         rule  = Table.grid(expand=True)
         rule.add_column()

@@ -10,9 +10,10 @@ from screens import (
 
 
 class SkinApp:
-    def __init__(self):
+    def __init__(self, version: str = "0.1"):
         self.console = Console()
         self.api     = APIClient()
+        self.version = version
 
     def run(self):
         try:
@@ -27,7 +28,7 @@ class SkinApp:
 
     def _main_loop(self):
         while True:
-            choice = show_welcome(self.console)
+            choice = show_welcome(self.console, self.version)
 
             if choice == "quit":
                 return
@@ -56,7 +57,7 @@ class SkinApp:
     def _do_login(self) -> str:
         """Returns 'ok', 'back', or 'quit'."""
         while True:
-            creds = show_login(self.console)
+            creds = show_login(self.console, self.version)
             if creds is None:
                 return "back"
 
@@ -76,7 +77,7 @@ class SkinApp:
     def _do_register(self) -> str:
         """Returns 'ok', 'back', or 'quit'."""
         while True:
-            fields = show_register(self.console)
+            fields = show_register(self.console, self.version)
             if fields is None:
                 return "back"
 
@@ -104,7 +105,7 @@ class SkinApp:
             self.console.input("  Press Enter…")
             return "logout"
 
-        shell  = ChatShell(self.console, self.api, user)
+        shell  = ChatShell(self.console, self.api, user, self.version)
         result = shell.run()   # "logout" or "quit"
 
         if result in ("logout", "quit"):
