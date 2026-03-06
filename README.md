@@ -1,6 +1,6 @@
 # Skin Terminal Client
 
-A Rich TUI terminal client for the Skeleton backend.
+A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton), the backend that powers it.
 
 ## Setup
 
