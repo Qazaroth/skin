@@ -3,7 +3,7 @@
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from api_client import APIClient, APIError
-from screens import (
+from src.screens import (
     show_welcome, show_login, show_register,
     ChatShell, _error, _success, _status,
     GREEN, RED, YELLOW, BLURPLE, MUTED, LIGHT_TEXT

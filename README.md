@@ -8,18 +8,30 @@ A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton),
 
 ## Setup
 
-Make sure [Python 3.10+](https://www.python.org/downloads/) is installed, then just run the appropriate script for your platform — it will handle installing dependencies automatically on first launch.
+### Option 1 — Download the executable (recommended)
 
-**Windows** — double-click `run.bat`
+No Python required. Head to the [Releases](../../releases) page and download the file for your platform:
+
+- **Windows** — download `skin.exe`, then double-click it
+- **Linux** — download `skin`, then run:
+  ```bash
+  chmod +x skin
+  ./skin
+  ```
+
+### Option 2 — Run from source
+
+Make sure [Python 3.10+](https://www.python.org/downloads/) is installed, then run the appropriate script — it handles installing dependencies automatically on first launch.
+
+**Windows** — double-click `scripts/run.bat`
 
 **Linux / Mac** — open a terminal in the project folder and run:
 ```bash
-chmod +x run.sh
-./run.sh
+chmod +x scripts/run.sh
+./scripts/run.sh
 ```
 
-### Manual setup
-If you'd prefer to run it yourself:
+### Option 3 — Manual
 ```bash
 pip install -r requirements.txt
 python main.py
@@ -64,9 +76,15 @@ python main.py
 
 ```
 skin/
-├── main.py          # Entry point
-├── app.py           # App controller / screen orchestration
-├── api_client.py    # REST API wrapper (auth, users, future endpoints)
-├── screens.py       # All Rich TUI screens and the ChatShell
-└── requirements.txt
+├── src/
+│   ├── app.py           # App controller / screen orchestration
+│   ├── api_client.py    # REST API wrapper (auth, users, future endpoints)
+│   ├── config.py        # Config loader / saver
+│   └── screens.py       # All Rich TUI screens and the ChatShell
+├── scripts/
+│   ├── run.bat          # Windows launcher
+│   └── run.sh           # Linux / Mac launcher
+├── main.py              # Entry point
+├── requirements.txt
+└── README.md
 ```
