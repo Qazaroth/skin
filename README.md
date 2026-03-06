@@ -2,6 +2,10 @@
 
 A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton), the backend that powers it.
 
+> **Note:** This project is developed in my spare time — progress may come and go depending on availability. Bear with me!
+
+> **AI Disclosure:** This project is built with the assistance of [Claude](https://claude.ai) by Anthropic.
+
 ## Setup
 
 ```bash
