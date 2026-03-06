@@ -31,6 +31,16 @@ class SkinApp:
             )
 
     def _main_loop(self):
+        # Try silent auto-login from saved session
+        self.console.print(f"\n  [dim]Resuming session…[/]")
+        user = self.api.try_auto_login()
+        if user:
+            _success(self.console, f"Welcome back, {user.get('username', '')}!")
+            import time; time.sleep(0.6)
+            outcome = self._enter_chat(user)
+            if outcome == "quit":
+                return
+
         while True:
             choice = show_welcome(self.console, self.version)
 
@@ -124,32 +134,30 @@ class SkinApp:
                 return "ok"
             except APIError as e:
                 _error(self.console, str(e))
+                if e.requirements:
+                    for req in e.requirements:
+                        self.console.print(f"    [dim]• {req}[/]")
                 from rich.prompt import Confirm
                 if not Confirm.ask("  [bold]Try again?[/]", console=self.console):
                     return "back"
 
     # ── Chat ──────────────────────────────────────────────────────────────────
 
-    def _enter_chat(self) -> str:
+    def _enter_chat(self, user: dict = None) -> str:
         """Fetch profile, launch chat shell. Returns 'logout' or 'quit'."""
-        try:
-            user = self.api.get_me()
-        except APIError as e:
-            _error(self.console, f"Could not fetch profile: {e}")
-            self.console.input("  Press Enter…")
-            return "logout"
+        if user is None:
+            try:
+                user = self.api.get_me()
+            except APIError as e:
+                _error(self.console, f"Could not fetch profile: {e}")
+                self.console.input("  Press Enter…")
+                return "logout"
 
         # Derive WebSocket URL from the REST base URL
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = ws_url.rsplit("/api", 1)[0]  # strip /api suffix → ws://localhost:3000
 
         shell = ChatShell(self.console, self.api, user, self.version)
-
-        # Pre-load DM channels so the sidebar is populated immediately
-        try:
-            shell.dm_channels = self.api.get_dm_channels()
-        except Exception:
-            pass
 
         # Pre-load DM channels so the sidebar is populated immediately
         try:
@@ -169,7 +177,7 @@ class SkinApp:
 
         gateway.stop()
 
-        if result in ("logout", "quit"):
+        if result == "logout":
             try:
                 self.api.logout()
             except Exception:

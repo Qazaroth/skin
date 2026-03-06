@@ -170,18 +170,51 @@ class ChatShell:
         self.dm_channels     = []
         self.gw_status       = "connecting…"   # shown in sidebar
         self.gw_ready        = False
+        self._pending_render = False            # set by background thread to trigger re-render
+        self.unread          = set()            # channel ids with unread messages
 
     # ── Gateway callbacks (called from background thread) ─────────────────────
 
     def on_gateway_status(self, state: str, msg: str):
-        self.gw_status = msg
-        self.gw_ready  = (state == "ready")
+        self.gw_status       = msg
+        self.gw_ready        = (state == "ready")
+        self._pending_render = True
 
     def on_gateway_event(self, op: str, data: dict):
-        """Handle incoming gateway ops. Extend here as Phase 2 ops arrive."""
+        """Handle incoming gateway ops."""
         if op == "READY":
-            pass  # status already updated in on_gateway_status
-        # Future: MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE, PRESENCE_UPDATE…
+            pass  # status already handled in on_gateway_status
+
+        elif op == "MESSAGE_CREATE":
+            ch_id   = data.get("channel_id")
+            author  = data.get("author_display_name") or data.get("author_username", "?")
+            content = data.get("content", "")
+            ts      = self._fmt_ts(data.get("created_at"))
+            edited  = bool(data.get("edited_at"))
+
+            if ch_id == self.current_ch:
+                # Message is for the open channel — append directly
+                self.messages.append((author, content, ts, edited))
+                self._pending_render = True
+
+            elif self.current_ch is None:
+                # No channel open — auto-switch to this one and load it
+                self.current_ch      = ch_id
+                self.current_ch_name = f"DM:{author}"
+                self.messages        = [(author, content, ts, edited)]
+                # Refresh DM list so the sidebar shows the new channel
+                try:
+                    self.dm_channels = self.api.get_dm_channels()
+                except Exception:
+                    pass
+                self._pending_render = True
+
+            else:
+                # Message is for a different channel — mark it as unread in sidebar
+                self.unread.add(ch_id)
+                self._pending_render = True
+
+        # Future: MESSAGE_UPDATE, MESSAGE_DELETE, PRESENCE_UPDATE…
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -218,12 +251,13 @@ class ChatShell:
         dm_lines = ""
         if self.dm_channels:
             for ch in self.dm_channels[:8]:
-                name    = ch.get("participant_display_name") or ch.get("participant_username", "?")
+                name    = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
                 ch_id   = ch.get("id", "")
                 active  = "▶ " if ch_id == self.current_ch else "  "
-                dm_lines += f"[dim]{active}{name}[/]\n"
+                unread  = f"[bold {GREEN}] ●[/]" if ch_id in self.unread else ""
+                dm_lines += f"[dim]{active}{name}[/]{unread}\n"
         else:
-            dm_lines = "[dim]  /dms to load[/]\n"
+            dm_lines = "[dim]  (none yet)[/]\n"
 
         sidebar = Panel(
             f"[bold {LIGHT_TEXT}]@{uname}[/]\n"
@@ -315,7 +349,7 @@ class ChatShell:
         t.add_column("Channel ID", style=f"dim {MUTED}")
 
         for i, ch in enumerate(self.dm_channels, 1):
-            name = ch.get("participant_display_name") or ch.get("participant_username", "?")
+            name = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
             t.add_row(str(i), name, ch.get("id", ""))
 
         self.console.print(t)
@@ -338,11 +372,12 @@ class ChatShell:
 
         ch_id   = channel.get("id")
         recip   = channel.get("recipient", {})
-        name    = recip.get("displayName") or recip.get("username", recipient_id)
+        name    = self._fmt_participant(recip.get("displayName"), recip.get("username", recipient_id))
 
         self.current_ch      = ch_id
         self.current_ch_name = f"DM:{name}"
         self.messages        = []
+        self.unread.discard(ch_id)
 
         # Load message history
         try:
@@ -355,6 +390,12 @@ class ChatShell:
                 self.messages.append((author, content, ts, edited))
         except Exception:
             pass
+
+    def _fmt_participant(self, display_name, username) -> str:
+        """Format as 'Display Name (username)' or just 'username' if no display name."""
+        if display_name and display_name != username:
+            return f"{display_name} ({username})"
+        return username or "?"
 
     def _fmt_ts(self, ts_raw) -> str:
         import datetime
@@ -374,71 +415,52 @@ class ChatShell:
             self.console.input("  Press Enter…")
             return
         try:
-            msg     = self.api.send_message(self.current_ch, text)
-            author  = msg.get("author_display_name") or msg.get("author_username", "?")
-            content = msg.get("content", text)
-            ts      = self._fmt_ts(msg.get("created_at"))
-            self.messages.append((author, content, ts, False))
+            self.api.send_message(self.current_ch, text)
+            # Do NOT append locally — MESSAGE_CREATE from the gateway will handle display
         except Exception as e:
             _error(self.console, str(e))
             self.console.input("  Press Enter…")
 
     def _read_input(self) -> str | None:
         """
-        Read a line of input, but wake up every second to check for
-        gateway status changes and re-render if needed.
-        Returns the input string, or None on KeyboardInterrupt.
+        Read a line of input non-blocking on both Windows and Linux/Mac.
+        Uses a background thread for stdin so the main thread can poll for
+        gateway updates and re-render every 0.1s without waiting for Enter.
         """
         import sys
-        import select
+        import threading
 
         prompt = f"  \x1b[1;34m{self.current_ch_name} >\x1b[0m "
         sys.stdout.write(prompt)
         sys.stdout.flush()
 
-        buf = ""
-        last_status = self.gw_status
+        result_holder = [None]       # [0] = result string, or None if interrupted
+        done          = threading.Event()
 
-        while True:
-            # Check if stdin has data, with a 1-second timeout
+        def _reader():
             try:
-                ready, _, _ = select.select([sys.stdin], [], [], 1.0)
-            except (ValueError, OSError):
-                # stdin closed or unavailable (e.g. Windows — fall back)
-                try:
-                    return input()
-                except KeyboardInterrupt:
-                    return None
+                result_holder[0] = input()
+            except (EOFError, KeyboardInterrupt):
+                result_holder[0] = None
+            finally:
+                done.set()
 
-            if ready:
-                try:
-                    char = sys.stdin.read(1)
-                except KeyboardInterrupt:
-                    return None
-                if char in ("\n", "\r"):
-                    sys.stdout.write("\n")
-                    return buf.strip()
-                elif char in ("\x7f", "\x08"):  # backspace
-                    if buf:
-                        buf = buf[:-1]
-                        sys.stdout.write("\b \b")
-                        sys.stdout.flush()
-                elif char == "\x03":  # Ctrl+C
-                    return None
-                else:
-                    buf += char
-                    sys.stdout.write(char)
-                    sys.stdout.flush()
-            else:
-                # Timeout — check if gateway status changed
-                if self.gw_status != last_status:
-                    last_status = self.gw_status
-                    # Re-render: clear line, redraw screen, reprint prompt + buffer
-                    sys.stdout.write("\r\x1b[2K")
-                    sys.stdout.flush()
-                    self._full_render()
-                    sys.stdout.write(prompt + buf)
-                    sys.stdout.flush()
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+
+        while not done.wait(timeout=0.1):
+            if self._pending_render:
+                self._pending_render = False
+                # Clear current line, re-render, reprint prompt
+                # We can't show the typed buffer since input() owns stdin,
+                # but we can at least keep the screen fresh
+                sys.stdout.write("\r\x1b[2K")
+                sys.stdout.flush()
+                self._full_render()
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+
+        return result_holder[0]
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 

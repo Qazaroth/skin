@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Skin Terminal Client - Main Entry Point"""
 
-VERSION = "1.2.0"  # <-- Change this to update the version across the app
+VERSION = "1.3.0"  # <-- Change this to update the version across the app
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 import config
 from app import SkinApp

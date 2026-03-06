@@ -3,6 +3,8 @@ build/
 dist/
 
 config.json
+session.json
+
 .deps_installed
 
 *.spec

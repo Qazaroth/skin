@@ -1,20 +1,72 @@
 """API Client - Handles all REST communication with the Skeleton backend"""
 
 import requests
+import requests.cookies
+import json
+import os
 from typing import Optional
+
+COOKIE_FILE = "session.json"
 
 
 class APIError(Exception):
-    def __init__(self, message: str, status_code: int = 0):
+    def __init__(self, message: str, status_code: int = 0, requirements: list = None):
         super().__init__(message)
-        self.status_code = status_code
+        self.status_code  = status_code
+        self.requirements = requirements or []
 
 
 class APIClient:
     def __init__(self, base_url: str = "http://localhost:3000/api"):
-        self.base_url    = base_url
-        self.session     = requests.Session()  # session handles httpOnly cookie automatically
+        self.base_url     = base_url
+        self.session      = requests.Session()
         self.access_token: Optional[str] = None
+        self._load_cookies()
+
+    # ── Cookie persistence ────────────────────────────────────────────────────
+
+    def _load_cookies(self):
+        """Load saved cookies from disk into the session."""
+        if not os.path.exists(COOKIE_FILE):
+            return
+        try:
+            with open(COOKIE_FILE, "r") as f:
+                cookies = json.load(f)
+            for name, value in cookies.items():
+                self.session.cookies.set(name, value)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _save_cookies(self):
+        """Persist session cookies to disk."""
+        try:
+            cookies = {c.name: c.value for c in self.session.cookies}
+            with open(COOKIE_FILE, "w") as f:
+                json.dump(cookies, f)
+        except OSError:
+            pass
+
+    def _clear_cookies(self):
+        """Remove saved cookies from disk and clear session."""
+        self.session.cookies.clear()
+        try:
+            os.remove(COOKIE_FILE)
+        except OSError:
+            pass
+
+    def try_auto_login(self) -> Optional[dict]:
+        """
+        Attempt a silent refresh using the saved cookie.
+        Returns the user dict on success, None if no saved session or it expired.
+        """
+        if not os.path.exists(COOKIE_FILE):
+            return None
+        try:
+            self._refresh_access_token()
+            return self.get_me()
+        except (APIError, Exception):
+            self._clear_cookies()
+            return None
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -64,8 +116,9 @@ class APIClient:
                 raise APIError("Session expired. Please log in again.", 401)
 
         if not resp.ok:
-            message = data.get("error") or f"HTTP {resp.status_code}"
-            raise APIError(message, resp.status_code)
+            message      = data.get("error") or f"HTTP {resp.status_code}"
+            requirements = data.get("requirements", [])
+            raise APIError(message, resp.status_code, requirements)
 
         return data
 
@@ -80,6 +133,7 @@ class APIClient:
             raise APIError("Token refresh failed.", resp.status_code)
         data = resp.json()
         self.access_token = data.get("token")
+        self._save_cookies()  # persist the new refresh token cookie immediately
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +152,7 @@ class APIClient:
         )
         # Response shape: { token: "...", user: { ... } }
         self.access_token = data.get("token")
+        self._save_cookies()
         return data.get("user", data)
 
     def logout(self) -> None:
@@ -106,6 +161,7 @@ class APIClient:
         except APIError:
             pass
         self.access_token = None
+        self._clear_cookies()
 
     # ── Users ─────────────────────────────────────────────────────────────────
 
