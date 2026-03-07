@@ -137,12 +137,12 @@ class APIClient:
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    def register(self, username: str, email: str, password: str) -> dict:
+    def register(self, username: str, email: str, password: str, public_key: str = None) -> dict:
         """Returns the new user object. No token issued on register — login after."""
-        return self._request(
-            "POST", "/auth/register",
-            json={"username": username, "email": email, "password": password}
-        )
+        body = {"username": username, "email": email, "password": password}
+        if public_key:
+            body["public_key"] = public_key
+        return self._request("POST", "/auth/register", json=body)
 
     def login(self, login: str, password: str) -> dict:
         """Returns the user dict and stores the access token."""
@@ -196,15 +196,15 @@ class APIClient:
     # ── DM Channels ───────────────────────────────────────────────────────────
 
     def open_dm(self, username: str) -> dict:
-        """Open or retrieve an existing DM channel with another user."""
-        return self._request(
-            "POST", "/users/@me/channels",
-            json={"username": username}
-        )
+        """Open or retrieve an existing DM channel with another user.
+        Returns {id, encrypted, participants:[{user_id},...]}.
+        """
+        return self._request("POST", "/users/@me/channels", json={"username": username})
 
     def get_dm_channels(self) -> list:
         """Get all DM channels for the current user."""
         return self._request("GET", "/users/@me/channels") or []
+
 
     # ── Messages ──────────────────────────────────────────────────────────────
 
@@ -245,6 +245,26 @@ class APIClient:
     def get_guild(self, guild_id: str) -> dict:
         """Fetch a guild with its channels and members."""
         return self._request("GET", f"/guilds/{guild_id}")
+
+    def ack_message(self, channel_id: str, message_id: str) -> None:
+        """Mark message_id as the last read message in channel_id."""
+        self._request("POST", f"/channels/{channel_id}/ack", json={"message_id": message_id})
+
+    def get_user(self, user_id: str) -> dict:
+        """Fetch a user's public profile by ID. Returns {id, username, avatar_url, created_at}."""
+        return self._request("GET", f"/users/{user_id}")
+
+    def get_public_key(self, username: str) -> dict:
+        """Fetch a user's public key by username. Returns {user_id, username, public_key}."""
+        return self._request("GET", f"/users/{username}/public-key")
+
+    def join_guild(self, guild_id: str) -> dict:
+        """Join a guild. Returns {guild_id, user_id}."""
+        return self._request("POST", f"/guilds/{guild_id}/members", json={})
+
+    def get_guild_key(self, guild_id: str) -> dict:
+        """Fetch the encrypted guild key for the current user (E2EE guilds only)."""
+        return self._request("GET", f"/guilds/{guild_id}/keys/@me")
 
     # ── System ────────────────────────────────────────────────────────────────
 

@@ -184,6 +184,7 @@ class SkinApp:
             refresh_token = _refresh_token,
         )
         gateway.start()
+        shell._gateway = gateway  # expose for TYPING_START sends
 
         result = shell.run()
 

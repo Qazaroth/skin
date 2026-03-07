@@ -150,10 +150,11 @@ class ChatShell:
   [bold]/edit <field> <val>[/]           Update profile  (fields: username, displayName, avatar_url)
   [bold]/avatar <path>[/]                Upload a new avatar image (JPEG, PNG, GIF, WebP — max 8MB)
   [bold]/dms[/]                          List your DM conversations
-  [bold]/dm <username>[/]                Open a DM with a user
+  [bold]/dm <username>[/]                Open or resume a DM with a user (use their username, not ID)
   [bold]/guild[/]                        List all guilds you are in
   [bold]/guild <name or #>[/]            View guild channels & members — pick a number to join
   [bold]/guild create <n>[/]          Create a new guild
+  [bold]/joinserver <guild_id>[/]        Join a guild by ID
   [bold]/mute [username][/]              Toggle mute on current or named channel
   [bold]/msgs[/]                         Show messages with index numbers
   [bold]/editmsg <#> <new content>[/]    Edit one of your messages by index
@@ -163,7 +164,7 @@ class ChatShell:
   [bold]/quit[/]                         Exit the client
 
 [dim]── Coming soon ──────────────────────────────────────────────────────[/dim]
-  /leave  (requires backend support)
+  /leave, voice channels  (not yet in backend)
 """
 
     EDITABLE_FIELDS = ("username", "displayName", "avatar_url")
@@ -182,6 +183,8 @@ class ChatShell:
         self.current_guild_id = None       # id of the guild whose channel is currently open
         self.channel_guild_map = {}        # channel_id → guild_id, populated when viewing a guild
         self.channel_name_map  = {}        # channel_id → channel name, for /join by name
+        self.presence_map      = {}        # user_id → "online" | "offline"
+        self.typing_users      = {}        # channel_id → {username: expires_at}
         self.gw_status       = "connecting…"   # shown in sidebar
         self.gw_ready        = False
         self._pending_render = False            # set by background thread to trigger re-render
@@ -224,13 +227,12 @@ class ChatShell:
                         pass
                 # Find the channel name for the notification
                 ch_info   = next((c for c in self.dm_channels if c.get("id") == ch_id), {})
-                ch_name   = self._fmt_participant(
-                    ch_info.get("participant_display_name"),
-                    ch_info.get("participant_username") or author
-                )
+                pid_t, uname_t, dname_t = self._resolve_dm_participant(ch_info)
+                ch_name = self._fmt_participant(dname_t, uname_t or author)
                 if ch_id not in self.muted:
                     preview = content if len(content) <= 40 else content[:37] + "…"
-                    self._push_notification(f"DM from {ch_name}: {preview}  [dim](use /dm {ch_info.get('participant_username', ch_id)})[/]")
+                    dm_cmd = uname_t or author
+                    self._push_notification(f"DM from {ch_name}: {preview}  [dim](use /dm {dm_cmd})[/]")
                 self.unread.add(ch_id)
                 self._pending_render = True
 
@@ -255,6 +257,26 @@ class ChatShell:
                 idx = self.message_ids.index(msg_id)
                 self.messages.pop(idx)
                 self.message_ids.pop(idx)
+                self._pending_render = True
+
+        elif op == "PRESENCE_UPDATE":
+            user_id = data.get("userId")
+            status  = data.get("status", "offline")
+            if user_id:
+                self.presence_map[user_id] = status
+                self._pending_render = True
+
+        elif op == "TYPING_START":
+            import time
+            ch_id    = data.get("channelId")
+            username = data.get("username", "?")
+            user_id  = data.get("userId")
+            # Only show if it's in the current channel and not ourselves
+            my_id = self.user.get("id")
+            if ch_id == self.current_ch and user_id != my_id:
+                if ch_id not in self.typing_users:
+                    self.typing_users[ch_id] = {}
+                self.typing_users[ch_id][username] = time.monotonic() + 3.0
                 self._pending_render = True
 
     # ── Rendering ─────────────────────────────────────────────────────────────
@@ -338,14 +360,16 @@ class ChatShell:
             target_username = parts[1]
             ch = next((
                 c for c in self.dm_channels
-                if c.get("participant_username", "").lower() == target_username.lower()
+                if self._resolve_dm_participant(c)[1] and
+                   self._resolve_dm_participant(c)[1].lower() == target_username.lower()
             ), None)
             if not ch:
                 _error(self.console, f"No DM channel found for '{target_username}'. Use /dms to list channels.")
                 self.console.input("  Press Enter…")
                 return
             ch_id   = ch.get("id")
-            ch_name = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
+            _, uname_m, dname_m = self._resolve_dm_participant(ch)
+            ch_name = self._fmt_participant(dname_m, uname_m)
         elif self.current_ch:
             ch_id   = self.current_ch
             ch_name = self.current_ch_name
@@ -393,6 +417,17 @@ class ChatShell:
                 f"{idx_tag}[bold {BLURPLE}]{author}[/] [dim {MUTED}]{ts}[/]{edited_tag}\n  {content}\n"
             )
 
+        # Typing indicator — expire stale entries then show active ones
+        if self.current_ch and self.current_ch in self.typing_users:
+            self.typing_users[self.current_ch] = {
+                u: exp for u, exp in self.typing_users[self.current_ch].items() if exp > now
+            }
+            typers = list(self.typing_users[self.current_ch].keys())
+            if typers:
+                names = ", ".join(typers)
+                verb  = "is" if len(typers) == 1 else "are"
+                self.console.print(f"  [dim {MUTED}]• {names} {verb} typing…[/]")
+
     def _render_sidebar_and_input(self):
         uname  = self.user.get("username", "?")
         email  = self.user.get("email", "")
@@ -403,13 +438,17 @@ class ChatShell:
 
         dm_lines = ""
         if self.dm_channels:
+            from rich.markup import escape as _esc
             for ch in self.dm_channels[:8]:
-                name    = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
                 ch_id   = ch.get("id", "")
+                pid, uname, dname = self._resolve_dm_participant(ch)
+                name    = self._fmt_participant(dname, uname) if (uname or dname) else f"[dim]{(pid or '')[:8]}…[/]"
                 active  = "▶ " if ch_id == self.current_ch else "  "
                 unread  = f"[bold {GREEN}] ●[/]" if ch_id in self.unread else ""
                 muted   = f" [dim {MUTED}]🔇[/]" if ch_id in self.muted else ""
-                dm_lines += f"[dim]{active}{name}[/]{unread}{muted}\n"
+                pstatus = self.presence_map.get(pid or "", "offline")
+                pdot    = f"[bold {GREEN}]●[/] " if pstatus == "online" else "[dim]○[/] "
+                dm_lines += f"[dim]{active}[/]{pdot}[dim]{_esc(name)}[/]{unread}{muted}\n"
         else:
             dm_lines = "[dim]  (none yet)[/]\n"
 
@@ -545,33 +584,47 @@ class ChatShell:
         t.add_column("Channel ID", style=f"dim {MUTED}")
 
         for i, ch in enumerate(self.dm_channels, 1):
-            name = self._fmt_participant(ch.get("participant_display_name"), ch.get("participant_username"))
+            pid, uname, dname = self._resolve_dm_participant(ch)
+            name = self._fmt_participant(dname, uname) if (uname or dname) else (pid or "?")[:8] + "…"
             t.add_row(str(i), name, ch.get("id", ""))
 
         self.console.print(t)
-        self.console.print(f"  [dim {MUTED}]Use /dm <channel_id> to open a conversation.[/]")
+        self.console.print(f"  [dim {MUTED}]Use /dm <username> to open a conversation.[/]")
         self.console.input("  Press Enter…")
 
     def _cmd_dm(self, parts: list[str]):
         if len(parts) < 2:
-            _error(self.console, "Usage: /dm <recipient_id>")
+            _error(self.console, "Usage: /dm <username>")
             self.console.input("  Press Enter…")
             return
 
-        recipient_id = parts[1]
+        target_username = parts[1]
         try:
-            channel = self.api.open_dm(recipient_id)
+            channel = self.api.open_dm(target_username)
         except Exception as e:
             _error(self.console, str(e))
             self.console.input("  Press Enter…")
             return
 
-        ch_id   = channel.get("id")
-        recip   = channel.get("recipient", {})
-        name    = self._fmt_participant(recip.get("displayName"), recip.get("username", recipient_id))
+        ch_id     = channel.get("id")
+        encrypted = channel.get("encrypted", 0)
+        # Refresh DM list so sidebar has current participant info
+        try:
+            self.dm_channels = self.api.get_dm_channels()
+        except Exception:
+            pass
+        ch_info = next((c for c in self.dm_channels if c.get("id") == ch_id), {})
+        # Merge participants from open_dm response into ch_info if not already there
+        # (the POST response has usernames; the GET list may lag until next refresh)
+        if not ch_info.get("participants") and channel.get("participants"):
+            ch_info = dict(ch_info)
+            ch_info["participants"] = channel["participants"]
+        pid, uname, dname = self._resolve_dm_participant(ch_info)
+        name = self._fmt_participant(dname, uname or target_username)
+        enc_tag = " [🔒]" if encrypted else ""
 
         self.current_ch       = ch_id
-        self.current_ch_name  = f"DM:{name}"
+        self.current_ch_name  = f"DM:{name}{enc_tag}"
         self.current_guild_id = None
         self.messages         = []
         self.message_ids      = []
@@ -763,6 +816,36 @@ class ChatShell:
         ch_name    = self.channel_name_map.get(channel_id, channel_id[:8] + "…")
         self._open_channel(channel_id, f"#{ch_name}", guild_id)
 
+    def _cmd_joinserver(self, parts: list[str]):
+        """Join a guild by ID using POST /guilds/:id/members."""
+        if len(parts) < 2:
+            _error(self.console, "Usage: /joinserver <guild_id>")
+            self.console.input("  Press Enter…")
+            return
+        guild_id = parts[1]
+        try:
+            self.api.join_guild(guild_id)
+            # Refresh guild list
+            self.guilds = self.api.get_guilds()
+            _success(self.console, f"Joined guild! Use /guild to see your guilds.")
+        except Exception as e:
+            _error(self.console, str(e))
+        self.console.input("  Press Enter…")
+
+    def _resolve_dm_participant(self, ch: dict) -> tuple[str | None, str | None, str | None]:
+        """Return (participant_id, username, display_name) for a DM channel dict.
+        Reads username directly from participants array (now included by API).
+        display_name is not in the DM channel list — returns None for it.
+        """
+        my_id = self.user.get("id")
+        other = next(
+            (p for p in ch.get("participants", []) if p.get("user_id") != my_id),
+            None
+        )
+        if not other:
+            return None, None, None
+        return other.get("user_id"), other.get("username"), None
+
     def _fmt_participant(self, display_name, username) -> str:
         """Format as 'Display Name (username)' or just 'username' if no display name."""
         if display_name and display_name != username:
@@ -806,6 +889,18 @@ class ChatShell:
         sys.stdout.write(prompt)
         sys.stdout.flush()
 
+        # Send TYPING_START as soon as user is prompted (best-effort)
+        if self.current_ch:
+            try:
+                import json as _json
+                if hasattr(self, "_gateway") and self._gateway and self._gateway._ws:
+                    self._gateway._ws.send(_json.dumps({
+                        "op": "TYPING_START",
+                        "data": {"channelId": self.current_ch}
+                    }))
+            except Exception:
+                pass
+
         result_holder = [None]       # [0] = result string, or None if interrupted
         done          = threading.Event()
 
@@ -824,7 +919,12 @@ class ChatShell:
             import time
             now = time.monotonic()
             has_expiring = any(exp <= now for _, exp in self.notifications)
-            if self._pending_render or has_expiring:
+            # Also re-render if a typing indicator is about to expire
+            has_typing = any(
+                any(exp <= now for exp in ch_typers.values())
+                for ch_typers in self.typing_users.values()
+            )
+            if self._pending_render or has_expiring or has_typing:
                 self._pending_render = False
                 # Clear current line, re-render, reprint prompt
                 # We can't show the typed buffer since input() owns stdin,
@@ -882,6 +982,9 @@ class ChatShell:
 
                 elif cmd == "/join":
                     self._cmd_join(parts)
+
+                elif cmd == "/joinserver":
+                    self._cmd_joinserver(parts)
 
                 elif cmd == "/mute":
                     self._cmd_mute(parts)
