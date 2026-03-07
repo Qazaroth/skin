@@ -13,6 +13,7 @@ from rich import box
 from rich.layout import Layout
 from rich.live import Live
 import getpass
+import sys
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 BLURPLE   = "#5865F2"
@@ -150,6 +151,9 @@ class ChatShell:
   [bold]/avatar <path>[/]                Upload a new avatar image (JPEG, PNG, GIF, WebP — max 8MB)
   [bold]/dms[/]                          List your DM conversations
   [bold]/dm <username>[/]                Open a DM with a user
+  [bold]/guild[/]                        List all guilds you are in
+  [bold]/guild <name or #>[/]            View guild channels & members — pick a number to join
+  [bold]/guild create <n>[/]          Create a new guild
   [bold]/mute [username][/]              Toggle mute on current or named channel
   [bold]/msgs[/]                         Show messages with index numbers
   [bold]/editmsg <#> <new content>[/]    Edit one of your messages by index
@@ -158,8 +162,8 @@ class ChatShell:
   [bold]/logout[/]                       Log out
   [bold]/quit[/]                         Exit the client
 
-[dim]── Coming soon ──────────────────────────────────────────[/dim]
-  /join  /leave  /servers  (requires backend guild channels/WS)
+[dim]── Coming soon ──────────────────────────────────────────────────────[/dim]
+  /leave  (requires backend support)
 """
 
     EDITABLE_FIELDS = ("username", "displayName", "avatar_url")
@@ -174,6 +178,10 @@ class ChatShell:
         self.current_ch      = None
         self.current_ch_name = "home"
         self.dm_channels     = []
+        self.guilds          = []          # list of guild summaries from GET /users/@me/guilds
+        self.current_guild_id = None       # id of the guild whose channel is currently open
+        self.channel_guild_map = {}        # channel_id → guild_id, populated when viewing a guild
+        self.channel_name_map  = {}        # channel_id → channel name, for /join by name
         self.gw_status       = "connecting…"   # shown in sidebar
         self.gw_ready        = False
         self._pending_render = False            # set by background thread to trigger re-render
@@ -405,10 +413,22 @@ class ChatShell:
         else:
             dm_lines = "[dim]  (none yet)[/]\n"
 
+        guild_lines = ""
+        if self.guilds:
+            for g in self.guilds[:6]:
+                gid    = g.get("id", "")
+                gname  = g.get("name", "?")
+                active = "▶ " if gid == self.current_guild_id else "  "
+                guild_lines += f"[dim]{active}{gname}[/]\n"
+        else:
+            guild_lines = "[dim]  (none yet)[/]\n"
+
         sidebar = Panel(
             f"[bold {LIGHT_TEXT}]@{uname}[/]\n"
             f"[dim]{email}[/]\n\n"
             f"{status}\n\n"
+            f"[dim {MUTED}]── Guilds ───[/]\n"
+            f"{guild_lines}\n"
             f"[dim {MUTED}]── DMs ──────[/]\n"
             f"{dm_lines}",
             title=f"[bold {BLURPLE}]You[/]",
@@ -423,6 +443,9 @@ class ChatShell:
         self.console.print(Columns([sidebar, hint], expand=True))
 
     def _full_render(self):
+        # \x1b[3J clears scrollback so previous renders cannot be scrolled to
+        sys.stdout.write("\x1b[3J")
+        sys.stdout.flush()
         self.console.clear()
         self._render_header()
         self._render_messages()
@@ -547,10 +570,11 @@ class ChatShell:
         recip   = channel.get("recipient", {})
         name    = self._fmt_participant(recip.get("displayName"), recip.get("username", recipient_id))
 
-        self.current_ch      = ch_id
-        self.current_ch_name = f"DM:{name}"
-        self.messages        = []
-        self.message_ids     = []
+        self.current_ch       = ch_id
+        self.current_ch_name  = f"DM:{name}"
+        self.current_guild_id = None
+        self.messages         = []
+        self.message_ids      = []
         self.unread.discard(ch_id)
 
         # Load message history
@@ -565,6 +589,179 @@ class ChatShell:
                 self.message_ids.append(msg.get("id"))
         except Exception:
             pass
+
+    def _cmd_guild(self, parts: list[str]):
+        if len(parts) < 2:
+            # No arg — list all guilds the user is in
+            if not self.guilds:
+                self.console.print(f"  [dim {MUTED}]You are not in any guilds yet. Use /guild create <name> to make one.[/]")
+                self.console.input("  Press Enter…")
+                return
+            t = Table(title="Your Guilds", box=box.ROUNDED, border_style=BLURPLE)
+            t.add_column("#",     style=f"dim {MUTED}", width=4)
+            t.add_column("Name",  style=f"bold {LIGHT_TEXT}")
+            t.add_column("Owner ID", style=f"dim {MUTED}")
+            my_id = self.user.get("id", "")
+            for i, g in enumerate(self.guilds, 1):
+                oid = g.get("owner_id", "")
+                owner_label = "you" if oid == my_id else oid[:8] + "…"
+                t.add_row(str(i), g.get("name", "?"), owner_label)
+            self.console.print(t)
+            self.console.print(f"  [dim {MUTED}]Use /guild <name or #> to view a guild.[/]")
+            self.console.input("  Press Enter…")
+            return
+
+        if parts[1].lower() == "create":
+            if len(parts) < 3:
+                _error(self.console, "Usage: /guild create <name>")
+                self.console.input("  Press Enter…")
+                return
+            name = " ".join(parts[2:])
+            try:
+                guild = self.api.create_guild(name)
+                gname = guild.get("name", name)
+                gid   = guild.get("id", "")
+                self.guilds.append({"id": gid, "name": gname, "owner_id": self.user.get("id", "")})
+                _success(self.console, f"Created guild '{gname}'!")
+                self._show_guild_detail(guild)
+            except Exception as e:
+                _error(self.console, str(e))
+                self.console.input("  Press Enter…")
+            return
+
+        query = " ".join(parts[1:])
+
+        # Allow picking by number from the guild list
+        if query.lstrip("#").isdigit():
+            idx = int(query.lstrip("#")) - 1
+            if 0 <= idx < len(self.guilds):
+                guild_id = self.guilds[idx].get("id")
+            else:
+                _error(self.console, f"No guild #{idx + 1}. You are in {len(self.guilds)} guild(s).")
+                self.console.input("  Press Enter…")
+                return
+        else:
+            matches = [g for g in self.guilds if query.lower() in g.get("name", "").lower()]
+            if not matches:
+                _error(self.console, f"No guild matching '{query}'. Use /guild to list your guilds.")
+                self.console.input("  Press Enter…")
+                return
+            if len(matches) > 1:
+                self.console.print(f"\n  [bold {YELLOW}]Multiple guilds match '{query}':[/]\n")
+                t = Table(box=box.ROUNDED, border_style=YELLOW)
+                t.add_column("#",        style=f"dim {MUTED}", width=4)
+                t.add_column("Name",     style=f"bold {LIGHT_TEXT}")
+                t.add_column("Owner ID", style=f"dim {MUTED}")
+                my_id = self.user.get("id", "")
+                for i, g in enumerate(matches, 1):
+                    oid = g.get("owner_id", "")
+                    owner_label = "you" if oid == my_id else oid[:8] + "…"
+                    t.add_row(str(i), g.get("name", "?"), owner_label)
+                self.console.print(t)
+                choice = self.console.input(f"  [bold {BLURPLE}]Pick a number (or Enter to cancel):[/] ").strip()
+                if not choice or not choice.isdigit():
+                    self.console.input("  Cancelled. Press Enter…")
+                    return
+                pick = int(choice) - 1
+                if not 0 <= pick < len(matches):
+                    _error(self.console, "Invalid choice.")
+                    self.console.input("  Press Enter…")
+                    return
+                guild_id = matches[pick].get("id")
+            else:
+                guild_id = matches[0].get("id")
+
+        try:
+            guild = self.api.get_guild(guild_id)
+            self._show_guild_detail(guild)
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+
+    def _show_guild_detail(self, guild: dict):
+        """Render guild channels and members, then prompt to join a channel by number."""
+        guild_id = guild.get("id", "")
+        gname    = guild.get("name", "?")
+        channels = guild.get("channels", [])
+        members  = guild.get("members", [])
+
+        owner_id   = guild.get("owner_id", "")
+        owner_info = next((m for m in members if m.get("user_id") == owner_id), None)
+        owner_name = self._fmt_participant(
+            owner_info.get("displayName") if owner_info else None,
+            owner_info.get("username", owner_id[:8] + "…") if owner_info else owner_id[:8] + "…"
+        )
+
+        self.console.print(f"\n  [bold {BLURPLE}]{gname}[/]  [dim {MUTED}]owner: {owner_name}[/]\n")
+
+        t = Table(title="Channels", box=box.ROUNDED, border_style=BLURPLE)
+        t.add_column("#",       style=f"dim {MUTED}", width=4)
+        t.add_column("Channel", style=f"bold {LIGHT_TEXT}")
+        for i, ch in enumerate(channels, 1):
+            active = " ◄" if ch.get("id") == self.current_ch else ""
+            t.add_row(str(i), f"#{ch.get('name', '?')}{active}")
+        self.console.print(t)
+
+        t2 = Table(title="Members", box=box.ROUNDED, border_style=BLURPLE)
+        t2.add_column("User",     style=f"bold {LIGHT_TEXT}")
+        t2.add_column("Role",     style=f"dim {MUTED}")
+        t2.add_column("Nickname", style=f"dim {MUTED}")
+        for m in members:
+            crown = " 👑" if m.get("user_id") == owner_id else ""
+            name  = self._fmt_participant(m.get("displayName"), m.get("username", "?")) + crown
+            t2.add_row(name, m.get("role", ""), m.get("nickname") or "")
+        self.console.print(t2)
+
+        for ch in channels:
+            ch_id = ch.get("id")
+            self.channel_guild_map[ch_id] = guild_id
+            self.channel_name_map[ch_id]  = ch.get("name", ch_id)
+
+        if channels:
+            choice = self.console.input(f"\n  [bold {BLURPLE}]Join channel # (or Enter to cancel):[/] ").strip()
+            if choice and choice.isdigit():
+                pick = int(choice) - 1
+                if 0 <= pick < len(channels):
+                    ch_id   = channels[pick].get("id")
+                    ch_name = channels[pick].get("name", ch_id)
+                    if not self._open_channel(ch_id, f"#{ch_name}", guild_id):
+                        pass  # error already shown, Press Enter consumed
+                else:
+                    _error(self.console, "Invalid channel number.")
+
+    def _open_channel(self, channel_id: str, display_name: str, guild_id: str = None) -> bool:
+        """Open a channel by ID, load history, and set as active. Returns True on success."""
+        try:
+            history = self.api.get_messages(channel_id, limit=50)
+            self.current_ch       = channel_id
+            self.current_ch_name  = display_name
+            self.current_guild_id = guild_id
+            self.messages         = []
+            self.message_ids      = []
+            self.unread.discard(channel_id)
+            for msg in reversed(history):
+                author  = msg.get("author_display_name") or msg.get("author_username", "?")
+                content = msg.get("content", "")
+                ts      = self._fmt_ts(msg.get("created_at"))
+                edited  = bool(msg.get("edited_at"))
+                self.messages.append((author, content, ts, edited))
+                self.message_ids.append(msg.get("id"))
+            return True
+        except Exception as e:
+            _error(self.console, str(e))
+            self.console.input("  Press Enter…")
+            return False
+
+    def _cmd_join(self, parts: list[str]):
+        """Join a channel by its ID. Use /guild <name> to browse channels and pick by number."""
+        if len(parts) < 2:
+            _error(self.console, "Usage: /join <channel_id>  — tip: use /guild <name> to browse and pick channels interactively")
+            self.console.input("  Press Enter…")
+            return
+        channel_id = parts[1].lstrip("#")
+        guild_id   = self.channel_guild_map.get(channel_id)
+        ch_name    = self.channel_name_map.get(channel_id, channel_id[:8] + "…")
+        self._open_channel(channel_id, f"#{ch_name}", guild_id)
 
     def _fmt_participant(self, display_name, username) -> str:
         """Format as 'Display Name (username)' or just 'username' if no display name."""
@@ -679,6 +876,12 @@ class ChatShell:
 
                 elif cmd == "/dm":
                     self._cmd_dm(parts)
+
+                elif cmd == "/guild":
+                    self._cmd_guild(parts)
+
+                elif cmd == "/join":
+                    self._cmd_join(parts)
 
                 elif cmd == "/mute":
                     self._cmd_mute(parts)

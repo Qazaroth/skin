@@ -229,6 +229,23 @@ class APIClient:
     def delete_message(self, channel_id: str, message_id: str) -> None:
         self._request("DELETE", f"/channels/{channel_id}/messages/{message_id}")
 
+    # ── Guilds ────────────────────────────────────────────────────────────────
+
+    def create_guild(self, name: str, icon_url: str = None) -> dict:
+        """Create a new guild. Returns the guild with its default #general channel."""
+        body = {"name": name}
+        if icon_url:
+            body["icon_url"] = icon_url
+        return self._request("POST", "/guilds", json=body)
+
+    def get_guilds(self) -> list:
+        """Fetch all guilds the authenticated user is a member of."""
+        return self._request("GET", "/users/@me/guilds") or []
+
+    def get_guild(self, guild_id: str) -> dict:
+        """Fetch a guild with its channels and members."""
+        return self._request("GET", f"/guilds/{guild_id}")
+
     # ── System ────────────────────────────────────────────────────────────────
 
     def health(self) -> dict:

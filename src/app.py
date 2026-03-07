@@ -159,9 +159,13 @@ class SkinApp:
 
         shell = ChatShell(self.console, self.api, user, self.version)
 
-        # Pre-load DM channels so the sidebar is populated immediately
+        # Pre-load DM channels and guilds so the sidebar is populated immediately
         try:
             shell.dm_channels = self.api.get_dm_channels()
+        except Exception:
+            pass
+        try:
+            shell.guilds = self.api.get_guilds()
         except Exception:
             pass
 

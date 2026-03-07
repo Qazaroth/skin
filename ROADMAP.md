@@ -58,16 +58,18 @@ The essentials needed for a functional messaging client.
 
 ---
 
-## Phase 4 — Guild Channels ⏳
+## Phase 4 — Guild Channels 🔧
 
-*Waiting on backend.*
+*Basic guild support is now available. Further guild features depend on backend progress.*
 
-- [ ] Fetch and display server/guild list
-- [ ] Fetch and display channels within a guild
-- [ ] `/join <channel>` — switch to a guild channel
-- [ ] `/leave` — leave current guild channel
-- [ ] Guild channels shown in sidebar alongside DMs
+- [x] Create a guild (`/guild create <name>`)
+- [x] View a guild's channels and members (`/guild <id>`)
+- [x] Join and read a guild channel (`/join <channel_id>`)
+- [x] Send messages to guild channels
+- [x] Guild list — shown in sidebar, pre-loaded on login (`GET /users/@me/guilds`)
+- [ ] Guild channels shown in sidebar
 - [ ] Unread indicators for guild channels
+- [ ] `/leave` — leave current guild channel
 
 ---
 
