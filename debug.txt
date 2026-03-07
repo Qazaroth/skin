@@ -1,0 +1,4 @@
+DEBUG header user={'id': '9b191b53-009a-457e-b20c-493008464374', 'username': 'admin', 'email': 'admin@admin.com', 'displayName': 'Admin', 'avatar_url': None, 'role': 'admin', 'public_key': None, 'created_at': 1772877684002}
+DEBUG sidebar user={'id': '9b191b53-009a-457e-b20c-493008464374', 'username': 'admin', 'email': 'admin@admin.com', 'displayName': 'Admin', 'avatar_url': None, 'role': 'admin', 'public_key': None, 'created_at': 1772877684002}
+DEBUG header user={'id': '9b191b53-009a-457e-b20c-493008464374', 'username': 'admin', 'email': 'admin@admin.com', 'displayName': 'Admin', 'avatar_url': None, 'role': 'admin', 'public_key': None, 'created_at': 1772877684002}
+DEBUG sidebar user={'id': '9b191b53-009a-457e-b20c-493008464374', 'username': 'admin', 'email': 'admin@admin.com', 'displayName': 'Admin', 'avatar_url': None, 'role': 'admin', 'public_key': None, 'created_at': 1772877684002}

@@ -441,8 +441,8 @@ class ChatShell:
             from rich.markup import escape as _esc
             for ch in self.dm_channels[:8]:
                 ch_id   = ch.get("id", "")
-                pid, uname, dname = self._resolve_dm_participant(ch)
-                name    = self._fmt_participant(dname, uname) if (uname or dname) else f"[dim]{(pid or '')[:8]}…[/]"
+                pid, p_uname, p_dname = self._resolve_dm_participant(ch)
+                name    = self._fmt_participant(p_dname, p_uname) if (p_uname or p_dname) else f"[dim]{(pid or '')[:8]}…[/]"
                 active  = "▶ " if ch_id == self.current_ch else "  "
                 unread  = f"[bold {GREEN}] ●[/]" if ch_id in self.unread else ""
                 muted   = f" [dim {MUTED}]🔇[/]" if ch_id in self.muted else ""

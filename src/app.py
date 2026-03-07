@@ -32,14 +32,23 @@ class SkinApp:
 
     def _main_loop(self):
         # Try silent auto-login from saved session
-        self.console.print(f"\n  [dim]Resuming session…[/]")
+        self.console.print(f"\n  [dim]Checking saved session…[/]")
         user = self.api.try_auto_login()
         if user:
-            _success(self.console, f"Welcome back, {user.get('username', '')}!")
-            import time; time.sleep(0.6)
-            outcome = self._enter_chat(user)
-            if outcome == "quit":
-                return
+            uname = user.get("username", "")
+            self.console.print(f"\n  Saved session found for [bold]{uname}[/].")
+            choice = Prompt.ask(
+                f"  [bold {BLURPLE}]Resume as @{uname}?[/] [dim](y = resume, n = go to login)[/]",
+                console=self.console,
+                default="y"
+            ).strip().lower()
+            if choice in ("y", "yes", ""):
+                outcome = self._enter_chat(user)
+                if outcome == "quit":
+                    return
+            else:
+                # User wants a different account — clear the saved session
+                self.api.logout()
 
         while True:
             choice = show_welcome(self.console, self.version)
