@@ -21,6 +21,7 @@ The essentials needed for a functional messaging client.
 - [x] `/quit` preserves session for next launch
 - [x] Profile viewer (`/me`)
 - [x] Profile editor (`/edit username | displayName | avatar_url`)
+- [x] Avatar upload (`/avatar <path>`) — JPEG, PNG, GIF, WebP up to 8MB
 - [x] Version display in header
 
 ---

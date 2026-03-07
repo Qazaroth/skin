@@ -172,6 +172,27 @@ class APIClient:
         allowed = {k: v for k, v in fields.items() if k in ("username", "displayName", "avatar_url")}
         return self._request("PATCH", "/users/@me", json=allowed)
 
+    def upload_avatar(self, file_path: str) -> dict:
+        """Upload an avatar image via multipart/form-data. Returns {avatar_url}."""
+        import mimetypes
+        mime, _ = mimetypes.guess_type(file_path)
+        if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            raise APIError(f"Unsupported file type: {mime or 'unknown'}. Use JPEG, PNG, GIF or WebP.")
+        with open(file_path, "rb") as f:
+            resp = self.session.patch(
+                f"{self.base_url}/users/@me/avatar",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                files={"avatar": (file_path, f, mime)},
+                timeout=30,
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        if not resp.ok:
+            raise APIError(data.get("error") or f"HTTP {resp.status_code}", resp.status_code)
+        return data
+
     # ── DM Channels ───────────────────────────────────────────────────────────
 
     def open_dm(self, username: str) -> dict:

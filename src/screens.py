@@ -147,6 +147,7 @@ class ChatShell:
   [bold]/help[/]                         Show this message
   [bold]/me[/]                           Show your profile
   [bold]/edit <field> <val>[/]           Update profile  (fields: username, displayName, avatar_url)
+  [bold]/avatar <path>[/]                Upload a new avatar image (JPEG, PNG, GIF, WebP — max 8MB)
   [bold]/dms[/]                          List your DM conversations
   [bold]/dm <username>[/]                Open a DM with a user
   [bold]/mute [username][/]              Toggle mute on current or named channel
@@ -475,6 +476,33 @@ class ChatShell:
             _error(self.console, str(e))
         self.console.input("  Press Enter…")
 
+    def _cmd_avatar(self, parts: list[str]):
+        import os
+        if len(parts) < 2:
+            _error(self.console, "Usage: /avatar <path to image file>")
+            self.console.input("  Press Enter…")
+            return
+        path = " ".join(parts[1:]).strip('"').strip("'")
+        if not os.path.isfile(path):
+            _error(self.console, f"File not found: {path}")
+            self.console.input("  Press Enter…")
+            return
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        if size_mb > 8:
+            _error(self.console, f"File is {size_mb:.1f}MB — max allowed is 8MB.")
+            self.console.input("  Press Enter…")
+            return
+        try:
+            result = self.api.upload_avatar(path)
+            avatar_url = result.get("avatar_url", "")
+            self.user["avatar_url"] = avatar_url
+            _success(self.console, f"Avatar updated!")
+            if avatar_url:
+                self.console.print(f"  [dim {MUTED}]URL: {self.api.base_url.rstrip('/api')}{avatar_url}[/]")
+        except Exception as e:
+            _error(self.console, str(e))
+        self.console.input("  Press Enter…")
+
     def _cmd_dms(self):
         try:
             self.dm_channels = self.api.get_dm_channels()
@@ -642,6 +670,9 @@ class ChatShell:
 
                 elif cmd == "/edit":
                     self._cmd_edit(parts)
+
+                elif cmd == "/avatar":
+                    self._cmd_avatar(parts)
 
                 elif cmd == "/dms":
                     self._cmd_dms()
