@@ -165,11 +165,19 @@ class SkinApp:
         except Exception:
             pass
 
+        def _refresh_token() -> bool:
+            try:
+                self.api._refresh_access_token()
+                return True
+            except Exception:
+                return False
+
         gateway = Gateway(
-            ws_url    = ws_url,
-            get_token = lambda: self.api.access_token or "",
-            on_event  = shell.on_gateway_event,
-            on_status = shell.on_gateway_status,
+            ws_url        = ws_url,
+            get_token     = lambda: self.api.access_token or "",
+            on_event      = shell.on_gateway_event,
+            on_status     = shell.on_gateway_status,
+            refresh_token = _refresh_token,
         )
         gateway.start()
 

@@ -6,6 +6,8 @@ A Rich TUI terminal client for [Skeleton](https://github.com/Qazaroth/skeleton),
 
 > **AI Disclosure:** This project is built with the assistance of [Claude](https://claude.ai) by Anthropic.
 
+See [ROADMAP.md](./ROADMAP.md) for planned and completed features.
+
 ---
 
 ## Setup
@@ -93,5 +95,5 @@ skin/
 ## Notes
 
 - `session.json` is created next to `main.py` after first login and used for auto-login on subsequent launches. It stores only the refresh token cookie — never the access token.
-- The WebSocket gateway currently supports `IDENTIFY`, `READY`, and `MESSAGE_CREATE`. Further events (`MESSAGE_UPDATE`, `MESSAGE_DELETE`, `PRESENCE_UPDATE` etc.) will be added as the backend implements them.
+- The WebSocket gateway currently supports `IDENTIFY`, `READY`, `MESSAGE_CREATE`, `MESSAGE_UPDATE`, and `MESSAGE_DELETE`. Further events (`PRESENCE_UPDATE`, `TYPING_START` etc.) will be added as the backend implements them.
 - Real-time message display on Windows requires no extra setup — the client uses a background thread for input so the screen can update without waiting for Enter.
